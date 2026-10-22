@@ -776,6 +776,7 @@ fun StatisticsScreen(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
     onAnalyzeCurrentMonth: () -> Unit,
+    onOpenMonthlyAnalysis: () -> Unit,
 ) {
     val appearState = rememberAppearAnimationState()
     LazyColumn(
@@ -833,6 +834,7 @@ fun StatisticsScreen(
                 hasCurrentMonthExpense = uiState.categoryRanking.isNotEmpty(),
                 running = uiState.monthlyAnalysisRunning,
                 onAnalyzeCurrentMonth = onAnalyzeCurrentMonth,
+                onOpenMonthlyAnalysis = onOpenMonthlyAnalysis,
             )
         }
     }
@@ -988,6 +990,7 @@ private fun MonthlyAnalysisCard(
     hasCurrentMonthExpense: Boolean,
     running: Boolean,
     onAnalyzeCurrentMonth: () -> Unit,
+    onOpenMonthlyAnalysis: () -> Unit,
 ) {
     YanHuoPanel(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -997,7 +1000,7 @@ private fun MonthlyAnalysisCard(
             if (report == null) {
                 Text("尚未生成月度分析", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "应用会在每月最后一天 23:30 汇总分类支出，并使用设置中的 DeepSeek 配置生成报告。",
+                    text = "应用会在每月最后一天 23:30 完成本地统计，并使用设置中的 DeepSeek 配置生成结构化消费月报。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -1006,7 +1009,7 @@ private fun MonthlyAnalysisCard(
                 val monthLabel = month?.let { value ->
                     "${value.year} 年 ${value.monthValue} 月"
                 } ?: report.monthKey
-                Text("$monthLabel 分类支出分析", style = MaterialTheme.typography.titleMedium)
+                Text("$monthLabel 消费分析", style = MaterialTheme.typography.titleMedium)
                 Text(report.summary, style = MaterialTheme.typography.bodyLarge)
                 val observations = listOfNotNull(
                     report.observation1,
@@ -1054,6 +1057,12 @@ private fun MonthlyAnalysisCard(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
             ) {
                 Text(if (running) "正在分析…" else "立即分析本月")
+            }
+            FilledTonalButton(
+                onClick = onOpenMonthlyAnalysis,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text("查看完整月报与历史")
             }
             if (!deepSeekEnabled) {
                 Text(

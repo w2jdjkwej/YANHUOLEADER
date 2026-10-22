@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <uses-feature
         android:name="android.hardware.telephony"
@@ -29,6 +31,21 @@
             </intent-filter>
         </activity>
 
+        <!-- 系统分享菜单里的“截图记账”：只复制图片后转交主界面，不显示自己的界面。 -->
+        <activity
+            android:name=".ShareScreenshotActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/share_screenshot_label"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".system.WechatNotificationListener"
             android:exported="true"
@@ -39,9 +56,12 @@
             </intent-filter>
         </service>
 
+        <!-- HyperOS 会在微信启动时冻结后台进程，无障碍事件要等解冻后才送达，支付页早已关闭。
+             连接后转为前台服务，进程不再被冻结。 -->
         <service
             android:name=".system.WechatPaymentAccessibilityService"
             android:exported="true"
+            android:foregroundServiceType="specialUse"
             android:label="@string/payment_accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
@@ -50,6 +70,9 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/wechat_payment_accessibility_service" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="实时读取微信支付成功页用于本机自动记账，避免系统冻结后台进程导致漏读" />
         </service>
 
         <receiver

@@ -1,33 +1,49 @@
 package com.yanhuozhang.offline.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.yanhuozhang.offline.YanHuoApplication
 import com.yanhuozhang.offline.analysis.MonthlyAnalysisGenerationResult
+import com.yanhuozhang.offline.analysis.MonthlyAiAnalysis
+import com.yanhuozhang.offline.analysis.MonthlyAnalysisPayload
 import com.yanhuozhang.offline.backup.BackupCodec
 import com.yanhuozhang.offline.backup.BackupCrypto
 import com.yanhuozhang.offline.core.AccountingType
 import com.yanhuozhang.offline.core.MoneyParser
+import com.yanhuozhang.offline.core.StatisticsEffect
 import com.yanhuozhang.offline.data.CategoryEntity
 import com.yanhuozhang.offline.data.LedgerInput
 import com.yanhuozhang.offline.data.LedgerRecordEntity
+import com.yanhuozhang.offline.data.LedgerStatus
 import com.yanhuozhang.offline.data.MonthlyAnalysisReportEntity
 import com.yanhuozhang.offline.data.PersonalRuleInput
 import com.yanhuozhang.offline.data.PersonalRuleEntity
 import com.yanhuozhang.offline.data.TransactionEventEntity
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionResult
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionState
+import com.yanhuozhang.offline.recognition.readScreenshotBytes
 import com.yanhuozhang.offline.settings.AppSettings
 import com.yanhuozhang.offline.settings.DeepSeekModel
 import com.yanhuozhang.offline.settings.DeepSeekThinkingMode
+import com.yanhuozhang.offline.settings.MerchantOcrSettings
+import com.yanhuozhang.offline.system.MerchantOcrDebugStore
 import com.yanhuozhang.offline.system.ReminderScheduler
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.ZonedDateTime
 import java.time.YearMonth
 import java.time.ZoneId
@@ -47,15 +63,42 @@ data class MainUiState(
     val monthlyAnalysisRunning: Boolean = false,
 )
 
+data class MonthlyAnalysisDetailState(
+    val selectedMonth: YearMonth = YearMonth.now(ZoneId.of("Asia/Shanghai")),
+    val availableMonths: List<YearMonth> = emptyList(),
+    val localAnalysis: MonthlyAnalysisPayload? = null,
+    val aiAnalysis: MonthlyAiAnalysis? = null,
+    val report: MonthlyAnalysisReportEntity? = null,
+    val reportIsCurrent: Boolean = false,
+    val deepSeekEnabled: Boolean = false,
+    val running: Boolean = false,
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as YanHuoApplication
     private val repository = app.container.ledgerRepository
     private val settingsRepository = app.container.settingsRepository
     private val backupRepository = app.container.backupRepository
     private val monthlyAnalysisRepository = app.container.monthlyAnalysisRepository
+    private val merchantOcrDebugStore = MerchantOcrDebugStore(app)
+    private val screenshotRecognitionService = app.container.screenshotRecognitionService
+    private val sharedScreenshotInbox = app.container.sharedScreenshotInbox
+    private val screenshotRecognitionState =
+        MutableStateFlow<ScreenshotRecognitionState>(ScreenshotRecognitionState.Idle)
+    private var screenshotRecognitionJob: Job? = null
+    private var nextScreenshotRequestId = 0L
     private val monthlyAnalysisRunning = MutableStateFlow(false)
+    private val selectedMonthlyAnalysisMonth = MutableStateFlow(
+        YearMonth.now(ZoneId.of("Asia/Shanghai")),
+    )
 
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    val screenshotRecognition: StateFlow<ScreenshotRecognitionState> =
+        screenshotRecognitionState.asStateFlow()
+
+    /** 系统分享过来、等待识别的截图。 */
+    val pendingSharedScreenshot: StateFlow<File?> = sharedScreenshotInbox.pendingScreenshot
 
     private data class BusinessState(
         val records: List<LedgerRecordEntity>,
@@ -80,11 +123,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val running: Boolean,
     )
 
+    private data class MonthlyAnalysisRuntimeState(
+        val running: Boolean,
+        val settings: AppSettings,
+    )
+
     private val monthlyAnalysisState = combine(
         monthlyAnalysisRepository.latestReport,
         monthlyAnalysisRunning,
     ) { report, running ->
         MonthlyAnalysisState(report, running)
+    }
+
+    private val monthlyAnalysisRuntimeState = combine(
+        monthlyAnalysisRunning,
+        settingsRepository.settings,
+    ) { running, settings ->
+        MonthlyAnalysisRuntimeState(running, settings)
     }
 
     val uiState: StateFlow<MainUiState> = combine(
@@ -116,6 +171,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = MainUiState(),
+    )
+
+    val monthlyAnalysisDetailState: StateFlow<MonthlyAnalysisDetailState> = combine(
+        repository.records,
+        repository.categories,
+        monthlyAnalysisRepository.reports,
+        selectedMonthlyAnalysisMonth,
+        monthlyAnalysisRuntimeState,
+    ) { records, categories, reports, selectedMonth, runtime ->
+        val snapshot = monthlyAnalysisRepository.createSnapshot(
+            records = records,
+            categories = categories,
+            month = selectedMonth,
+        )
+        val report = reports.firstOrNull { item -> item.monthKey == selectedMonth.toString() }
+        val months = buildSet {
+            add(YearMonth.now(ZoneId.of("Asia/Shanghai")))
+            for (record in records) {
+                if (record.status == LedgerStatus.ACTIVE &&
+                    (record.statisticsEffect == StatisticsEffect.ADD_EXPENSE ||
+                        record.statisticsEffect == StatisticsEffect.SUBTRACT_EXPENSE)
+                ) {
+                    val dateTime = java.time.ZonedDateTime.ofInstant(
+                        java.time.Instant.ofEpochMilli(record.statisticsTimeMillis),
+                        ZoneId.of("Asia/Shanghai"),
+                    )
+                    add(YearMonth.from(dateTime))
+                }
+            }
+            for (item in reports) {
+                runCatching { YearMonth.parse(item.monthKey) }.getOrNull()?.let(::add)
+            }
+        }.sortedDescending()
+        MonthlyAnalysisDetailState(
+            selectedMonth = selectedMonth,
+            availableMonths = months,
+            localAnalysis = snapshot?.payload
+                ?: monthlyAnalysisRepository.decodeLocalReport(report),
+            aiAnalysis = monthlyAnalysisRepository.decodeAiReport(report),
+            report = report,
+            reportIsCurrent = snapshot != null && report?.inputFingerprint == snapshot.fingerprint,
+            deepSeekEnabled = runtime.settings.deepSeekEnabled &&
+                runtime.settings.deepSeekApiKey.isNotBlank(),
+            running = runtime.running,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = MonthlyAnalysisDetailState(),
     )
 
     fun addManual(input: LedgerInput, rule: PersonalRuleInput? = null) {
@@ -224,14 +328,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun analyzeCurrentMonth() {
-        if (monthlyAnalysisRunning.value) {
-            return
+    val merchantOcrDebugDirectory: String
+        get() = merchantOcrDebugStore.directory.absolutePath
+
+    fun updateMerchantOcr(settings: MerchantOcrSettings) {
+        launchOperation("截图识别设置已保存") {
+            settingsRepository.setMerchantOcr(settings)
         }
+    }
+
+    fun clearMerchantOcrDebugFiles() {
+        viewModelScope.launch {
+            val deletedCount = withContext(Dispatchers.IO) { merchantOcrDebugStore.clear() }
+            messages.emit("已清除 $deletedCount 个调试文件")
+        }
+    }
+
+    fun analyzeCurrentMonth() {
+        analyzeMonth(YearMonth.now(ZoneId.of("Asia/Shanghai")))
+    }
+
+    fun analyzeSelectedMonth() {
+        analyzeMonth(selectedMonthlyAnalysisMonth.value)
+    }
+
+    fun selectMonthlyAnalysisMonth(month: YearMonth) {
+        selectedMonthlyAnalysisMonth.value = month
+    }
+
+    private fun analyzeMonth(month: YearMonth) {
+        if (monthlyAnalysisRunning.value) return
+        val monthLabel = "${month.year}年${month.monthValue}月"
         viewModelScope.launch {
             monthlyAnalysisRunning.value = true
             try {
-                val month = YearMonth.now(ZoneId.of("Asia/Shanghai"))
                 when (
                     val result = monthlyAnalysisRepository.generate(
                         month = month,
@@ -239,13 +369,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 ) {
                     is MonthlyAnalysisGenerationResult.Generated ->
-                        messages.emit("本月账单分析已生成")
+                        messages.emit("${monthLabel}账单分析已生成")
                     is MonthlyAnalysisGenerationResult.AlreadyCurrent ->
-                        messages.emit("本月账单分析已是最新")
+                        messages.emit("${monthLabel}账单分析已是最新")
                     MonthlyAnalysisGenerationResult.DeepSeekUnavailable ->
                         messages.emit("请先在设置中启用 DeepSeek 并填写 API Key")
                     MonthlyAnalysisGenerationResult.NoExpense ->
-                        messages.emit("本月还没有可分析的支出")
+                        messages.emit("${monthLabel}没有可分析的支出")
                     is MonthlyAnalysisGenerationResult.Failed ->
                         messages.emit(result.reason)
                 }
@@ -273,6 +403,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun parseAmount(text: String): Long? = MoneyParser.parseUserInputCents(text)
+
+    fun recognizeScreenshot(uri: Uri) {
+        startScreenshotRecognition {
+            val input = app.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("无法读取这张图片")
+            input.use(::readScreenshotBytes)
+        }
+    }
+
+    fun recognizeSharedScreenshot(file: File) {
+        if (!sharedScreenshotInbox.take(file)) return
+        startScreenshotRecognition {
+            try {
+                file.readBytes()
+            } finally {
+                file.delete()
+            }
+        }
+    }
+
+    fun cancelScreenshotRecognition() {
+        screenshotRecognitionJob?.cancel()
+        screenshotRecognitionJob = null
+        screenshotRecognitionState.value = ScreenshotRecognitionState.Idle
+    }
+
+    /** 表单已经用识别结果回填后调用，回到空闲状态。 */
+    fun consumeScreenshotRecognition(requestId: Long) {
+        val state = screenshotRecognitionState.value
+        if (state is ScreenshotRecognitionState.Finished && state.requestId == requestId) {
+            screenshotRecognitionState.value = ScreenshotRecognitionState.Idle
+        }
+    }
+
+    private fun startScreenshotRecognition(loadImage: () -> ByteArray) {
+        screenshotRecognitionJob?.cancel()
+        val requestId = ++nextScreenshotRequestId
+        screenshotRecognitionState.value = ScreenshotRecognitionState.Running(requestId)
+        screenshotRecognitionJob = viewModelScope.launch {
+            val result = try {
+                val bytes = withContext(Dispatchers.IO) { loadImage() }
+                screenshotRecognitionService.recognize(bytes)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                ScreenshotRecognitionResult.Failed(error.message ?: "截图识别失败")
+            }
+            val current = screenshotRecognitionState.value
+            if (current is ScreenshotRecognitionState.Running && current.requestId == requestId) {
+                screenshotRecognitionState.value = ScreenshotRecognitionState.Finished(requestId, result)
+            }
+        }
+    }
 
     private fun launchOperation(successMessage: String, operation: suspend () -> Unit) {
         viewModelScope.launch {

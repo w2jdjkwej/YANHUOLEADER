@@ -82,7 +82,7 @@ class DeepSeekCategoryClassifierTest {
     fun `default request uses flash model without thinking`() {
         val request = classifier.buildRequest(context)
 
-        assertTrue(request.contains("\"model\":\"deepseek-v4-flash\""))
+        assertTrue(request.contains("\"model\":\"deepseek-flash\""))
         assertTrue(request.contains("\"thinking\":{\"type\":\"disabled\"}"))
         assertTrue(request.contains("\"max_tokens\":160"))
         assertTrue(request.contains("\"type\":\"json_object\""))

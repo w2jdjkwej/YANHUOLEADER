@@ -1,6 +1,9 @@
 package com.yanhuozhang.offline.backup
 
 import androidx.room.withTransaction
+import com.yanhuozhang.offline.analysis.MonthlyAiAnalysis
+import com.yanhuozhang.offline.analysis.MonthlyAnalysisJson
+import com.yanhuozhang.offline.analysis.MonthlyAnalysisPayload
 import com.yanhuozhang.offline.data.AppDatabase
 import com.yanhuozhang.offline.settings.DeepSeekModel
 import com.yanhuozhang.offline.settings.DeepSeekThinkingMode
@@ -89,14 +92,36 @@ class BackupRepository(
         if (reportMonths.distinct().size != reportMonths.size ||
             envelope.monthlyAnalysisReports.any { report ->
                 runCatching { YearMonth.parse(report.monthKey) }.isFailure ||
-                    report.totalExpenseCents <= 0 ||
                     report.summary.isBlank() ||
                     report.inputFingerprint.isBlank() ||
                     !DeepSeekModel.isSupported(report.model) ||
-                    !DeepSeekThinkingMode.isSupported(report.thinkingMode)
+                    !DeepSeekThinkingMode.isSupported(report.thinkingMode) ||
+                    !isValidMonthlyReport(report)
             }
         ) {
             throw BackupException("月度分析数据无效")
         }
+    }
+
+    private fun isValidMonthlyReport(
+        report: com.yanhuozhang.offline.data.MonthlyAnalysisReportEntity,
+    ): Boolean {
+        if (report.reportSchemaVersion < 2) {
+            return report.totalExpenseCents > 0L
+        }
+        val localJson = report.localAnalysisJson ?: return false
+        val aiJson = report.aiAnalysisJson ?: return false
+        return runCatching {
+            val local = MonthlyAnalysisJson.format.decodeFromString(
+                MonthlyAnalysisPayload.serializer(),
+                localJson,
+            )
+            MonthlyAnalysisJson.format.decodeFromString(
+                MonthlyAiAnalysis.serializer(),
+                aiJson,
+            )
+            local.month == report.monthKey &&
+                local.summary.netExpenseCents == report.totalExpenseCents
+        }.getOrDefault(false)
     }
 }

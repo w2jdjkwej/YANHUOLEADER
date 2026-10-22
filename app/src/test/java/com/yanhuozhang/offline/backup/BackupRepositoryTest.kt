@@ -136,8 +136,46 @@ class BackupRepositoryTest {
     }
 
     @Test
-    fun `new backups use schema version 4`() {
-        assertEquals(4, BackupEnvelope.CURRENT_SCHEMA_VERSION)
+    fun `new backups use schema version 5`() {
+        assertEquals(5, BackupEnvelope.CURRENT_SCHEMA_VERSION)
+    }
+
+    @Test
+    fun `structured monthly report fields round trip through backup codec`() {
+        val report = MonthlyAnalysisReportEntity(
+            monthKey = "2026-08",
+            totalExpenseCents = 5_000,
+            summary = "结构化月报",
+            observation1 = null,
+            observation2 = null,
+            observation3 = null,
+            suggestion = null,
+            lightComment = null,
+            model = DeepSeekModel.FLASH.apiValue,
+            thinkingMode = DeepSeekThinkingMode.DISABLED.apiValue,
+            inputFingerprint = "structured-fingerprint",
+            generatedAtMillis = 2_000,
+            localAnalysisJson = "{\"month\":\"2026-08\"}",
+            aiAnalysisJson = "{\"headline\":\"结构化月报\"}",
+            reportSchemaVersion = 2,
+        )
+        val envelope = BackupEnvelope(
+            createdAtMillis = 2_000,
+            ledgerRecords = emptyList(),
+            transactionEvents = emptyList(),
+            categories = emptyList(),
+            personalRules = emptyList(),
+            ignoredFingerprints = emptyList(),
+            settings = BackupSettings(),
+            monthlyAnalysisReports = listOf(report),
+        )
+
+        val decoded = BackupCodec.decode(BackupCodec.encode(envelope))
+        val decodedReport = decoded.monthlyAnalysisReports.single()
+
+        assertEquals(2, decodedReport.reportSchemaVersion)
+        assertEquals(report.localAnalysisJson, decodedReport.localAnalysisJson)
+        assertEquals(report.aiAnalysisJson, decodedReport.aiAnalysisJson)
     }
 
     @Test

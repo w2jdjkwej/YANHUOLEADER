@@ -16,8 +16,10 @@ import com.yanhuozhang.offline.settings.SettingsRepository
 import com.yanhuozhang.offline.system.SystemNotificationManager
 import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -32,8 +34,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(sdk = [35], application = Application::class)
 class AutomaticClassificationCoordinatorTest {
+    private lateinit var classificationJob: Job
     private lateinit var database: AppDatabase
     private lateinit var coordinator: AutomaticClassificationCoordinator
     private lateinit var notificationManager: NotificationManager
@@ -46,18 +49,20 @@ class AutomaticClassificationCoordinatorTest {
             .allowMainThreadQueries()
             .build()
         runBlocking { DatabaseSeeder.seedDefaultCategories(database.categoryDao()) }
+        classificationJob = SupervisorJob()
         coordinator = AutomaticClassificationCoordinator(
             repository = LedgerRepository(database, ZoneId.of("Asia/Shanghai")),
             settingsRepository = SettingsRepository(context),
             classifier = DeepSeekCategoryClassifier(),
             notificationManager = SystemNotificationManager(context),
-            applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            applicationScope = CoroutineScope(classificationJob + Dispatchers.IO),
         )
         notificationManager = context.getSystemService(NotificationManager::class.java)
     }
 
     @After
     fun tearDown() {
+        runBlocking { classificationJob.cancelAndJoin() }
         database.close()
     }
 

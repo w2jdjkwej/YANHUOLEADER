@@ -18,7 +18,7 @@ data class BackupSettings(
     val lockTimeoutSeconds: Int = 60,
     val deepSeekEnabled: Boolean = false,
     val deepSeekApiKey: String = "",
-    val deepSeekModel: String = "deepseek-v4-flash",
+    val deepSeekModel: String = "deepseek-flash",
     val deepSeekThinkingMode: String = "disabled",
 )
 
@@ -36,7 +36,7 @@ data class BackupEnvelope(
 ) {
     companion object {
         const val MINIMUM_SUPPORTED_SCHEMA_VERSION = 1
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 5
     }
 }
 

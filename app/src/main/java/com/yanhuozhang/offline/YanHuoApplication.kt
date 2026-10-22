@@ -9,8 +9,13 @@ import com.yanhuozhang.offline.classification.DeepSeekCategoryClassifier
 import com.yanhuozhang.offline.data.AppDatabase
 import com.yanhuozhang.offline.data.DatabaseSeeder
 import com.yanhuozhang.offline.data.LedgerRepository
+import com.yanhuozhang.offline.recognition.BitmapScreenshotImageEncoder
+import com.yanhuozhang.offline.recognition.DeepSeekScreenshotRecognizer
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionService
+import com.yanhuozhang.offline.recognition.SharedScreenshotInbox
 import com.yanhuozhang.offline.settings.SettingsRepository
 import com.yanhuozhang.offline.system.SystemNotificationManager
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +59,13 @@ class AppContainer(application: Application) {
         settingsRepository = settingsRepository,
         client = DeepSeekMonthlyAnalysisClient(),
     )
+    val screenshotRecognitionService = ScreenshotRecognitionService(
+        settingsRepository = settingsRepository,
+        ledgerRepository = ledgerRepository,
+        imageEncoder = BitmapScreenshotImageEncoder(),
+        recognizer = DeepSeekScreenshotRecognizer(),
+    )
+    val sharedScreenshotInbox = SharedScreenshotInbox(File(application.cacheDir, "shared-screenshots"))
     val notificationManager = SystemNotificationManager(application)
     val automaticClassificationCoordinator = AutomaticClassificationCoordinator(
         repository = ledgerRepository,

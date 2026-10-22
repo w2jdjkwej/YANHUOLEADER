@@ -161,4 +161,7 @@ data class MonthlyAnalysisReportEntity(
     val thinkingMode: String,
     val inputFingerprint: String,
     val generatedAtMillis: Long,
+    val localAnalysisJson: String? = null,
+    val aiAnalysisJson: String? = null,
+    val reportSchemaVersion: Int = 1,
 )

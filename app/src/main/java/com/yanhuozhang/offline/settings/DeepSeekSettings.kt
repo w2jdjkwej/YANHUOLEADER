@@ -5,8 +5,8 @@ enum class DeepSeekModel(
     val displayName: String,
 ) {
     FLASH(
-        apiValue = "deepseek-v4-flash",
-        displayName = "V4 Flash",
+        apiValue = "deepseek-flash",
+        displayName = "V4.1 Flash",
     ),
     PRO(
         apiValue = "deepseek-v4-pro",
@@ -16,10 +16,16 @@ enum class DeepSeekModel(
 
     companion object {
         fun fromApiValue(value: String): DeepSeekModel {
+            if (value == "deepseek-v4-flash") {
+                return FLASH
+            }
             return entries.firstOrNull { model -> model.apiValue == value } ?: FLASH
         }
 
         fun isSupported(value: String): Boolean {
+            if (value == "deepseek-v4-flash") {
+                return true
+            }
             return entries.any { model -> model.apiValue == value }
         }
     }

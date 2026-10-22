@@ -29,10 +29,19 @@ object WechatPaymentPageParser {
     private val completionActions = setOf("完成", "返回商家")
     private val excludedText = setOf("完成", "返回商家", "去打卡")
 
+    internal fun containsPaymentSuccessMarker(nodes: List<ScreenTextNode>): Boolean {
+        for (node in nodes) {
+            if (isSuccessMarker(node.text)) {
+                return true
+            }
+        }
+        return false
+    }
+
     fun parseNodes(nodes: List<ScreenTextNode>): PaymentPageObservation? {
         val visibleNodes = nodes.map { node -> node.copy(text = node.text.trim()) }
             .filter { node -> node.text.isNotEmpty() }
-        if (visibleNodes.none { node -> isSuccessMarker(node.text) }) {
+        if (!containsPaymentSuccessMarker(visibleNodes)) {
             return null
         }
         if (visibleNodes.none { node -> containsCompletionAction(node.text) }) {
@@ -160,7 +169,8 @@ object WechatPaymentPageParser {
         return candidate
     }
 
-    private fun cleanCounterpartyText(value: String): String? {
+    /** 截图 OCR 的商家提取也复用这里的前缀清洗和候选过滤，保证两条路径的口径一致。 */
+    internal fun cleanCounterpartyText(value: String): String? {
         var candidate = value.trim().trim('，', '。', ':', '：')
         val prefixes = listOf(
             "交易对象：", "交易对象:", "收款方：", "收款方:", "商家：", "商家:",

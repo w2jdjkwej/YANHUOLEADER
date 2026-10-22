@@ -97,11 +97,17 @@ class MonthlyAnalysisRepositoryTest {
                 assertEquals(DeepSeekModel.PRO, model)
                 assertEquals(DeepSeekThinkingMode.ENABLED, thinkingMode)
                 MonthlyAnalysisApiResult.Success(
-                    MonthlyAnalysisContent(
-                        summary = "本月餐饮支出为主要支出。",
-                        observations = listOf("餐饮占比为100%。"),
-                        suggestion = null,
-                        lightComment = "餐饮依旧稳坐支出榜首席。",
+                    MonthlyAiAnalysis(
+                        headline = "本月餐饮支出为主要支出。",
+                        overallAssessment = "当前只有一笔消费。",
+                        keyFindings = listOf(
+                            AiKeyFinding(
+                                title = "餐饮占比最高",
+                                description = "餐饮占毛支出100%。",
+                                evidence = "餐饮支出23.50元",
+                                importance = "medium",
+                            ),
+                        ),
                     ),
                 )
             },
@@ -113,9 +119,28 @@ class MonthlyAnalysisRepositoryTest {
         assertTrue(first is MonthlyAnalysisGenerationResult.Generated)
         assertTrue(second is MonthlyAnalysisGenerationResult.AlreadyCurrent)
         assertEquals(1, apiCalls)
+        val saved = requireNotNull(database.monthlyAnalysisDao().findByMonth("2026-07"))
+        assertEquals(2, saved.reportSchemaVersion)
+        assertTrue(saved.localAnalysisJson?.contains("测试餐厅") == true)
+        assertTrue(saved.aiAnalysisJson?.contains("餐饮占比最高") == true)
+        assertEquals(null, saved.lightComment)
+
+        val failingRepository = MonthlyAnalysisRepository(
+            database = database,
+            settingsRepository = settingsRepository,
+            client = MonthlyAnalysisClient { _, _, _, _ ->
+                MonthlyAnalysisApiResult.Failure("模拟网络失败")
+            },
+        )
+        val failed = failingRepository.generate(
+            YearMonth.of(2026, 7),
+            force = true,
+            nowMillis = 3_000,
+        )
+        assertTrue(failed is MonthlyAnalysisGenerationResult.Failed)
         assertEquals(
-            "餐饮依旧稳坐支出榜首席。",
-            database.monthlyAnalysisDao().findByMonth("2026-07")?.lightComment,
+            1_000L,
+            database.monthlyAnalysisDao().findByMonth("2026-07")?.generatedAtMillis,
         )
     }
 }

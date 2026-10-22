@@ -14,9 +14,14 @@ android {
         applicationId = "com.yanhuozhang.offline"
         minSdk = 31
         targetSdk = 36
-        versionCode = 14
-        versionName = "2.4.5"
+        versionCode = 25
+        versionName = "2.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // 仅自用在 arm64 真机上。ML Kit OCR 的原生库每个 ABI 各带一份，只保留 arm64-v8a
+        // 可省下约 28MB；代价是 32 位手机和不带 ARM 转译的 x86 模拟器无法安装。
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     signingConfigs {
@@ -97,6 +102,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    // 微信支付成功页截图后的商家名 OCR。必须用 bundled 版本：模型随 APK 打包，
+    // 不依赖 Google Play 服务，国产无 GMS 的设备也能用。
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     ksp("androidx.room:room-compiler:2.7.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

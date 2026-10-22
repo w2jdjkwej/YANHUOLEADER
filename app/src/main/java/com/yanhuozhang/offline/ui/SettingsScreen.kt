@@ -44,7 +44,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,9 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yanhuozhang.offline.settings.DeepSeekModel
 import com.yanhuozhang.offline.settings.DeepSeekThinkingMode
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.yanhuozhang.offline.settings.MerchantOcrSettings
 import com.yanhuozhang.offline.core.AccountingType
 import com.yanhuozhang.offline.core.DefaultCategories
 import com.yanhuozhang.offline.data.CategoryEntity
@@ -83,13 +80,18 @@ private enum class PasswordAction {
 @Composable
 fun SettingsScreen(uiState: MainUiState, viewModel: MainViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    var permissionHealth by remember { mutableStateOf(PermissionHealthChecker.check(context)) }
+    var permissionHealth by rememberPermissionHealth()
     var reminderHourText by remember(uiState.settings.reminderHour) { mutableStateOf(uiState.settings.reminderHour.toString()) }
     var reminderMinuteText by remember(uiState.settings.reminderMinute) { mutableStateOf(uiState.settings.reminderMinute.toString()) }
     var deepSeekApiKeyText by remember(uiState.settings.deepSeekApiKey) {
         mutableStateOf(uiState.settings.deepSeekApiKey)
+    }
+    var ocrCropTopText by remember(uiState.settings.merchantOcr.cropTopPercent) {
+        mutableStateOf(uiState.settings.merchantOcr.cropTopPercent.toString())
+    }
+    var ocrCropBottomText by remember(uiState.settings.merchantOcr.cropBottomPercent) {
+        mutableStateOf(uiState.settings.merchantOcr.cropBottomPercent.toString())
     }
     var addingCategory by remember { mutableStateOf(false) }
     var editingCategory by remember { mutableStateOf<CategoryEntity?>(null) }
@@ -146,13 +148,7 @@ fun SettingsScreen(uiState: MainUiState, viewModel: MainViewModel, onBack: () ->
         }
     }
 
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) permissionHealth = PermissionHealthChecker.check(context)
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+
 
     // 设置页是在 YanHuoApp 提前 return 的分支里渲染的，那边收 messages 的
     // LaunchedEffect 已经销毁。没有这个 host，像“请先填写 DeepSeek API Key”
@@ -220,9 +216,18 @@ fun SettingsScreen(uiState: MainUiState, viewModel: MainViewModel, onBack: () ->
                 }
             }
             item {
-                SettingAction("微信支付页面读取", permissionHealth.accessibilityGranted) {
-                    openSettings(SystemSettingsIntents.accessibility())
-                }
+                SettingsRow(
+                    title = "微信支付页面读取",
+                    description = permissionHealth.paymentPageReaderDescription,
+                    trailing = {
+                        StatusPill(
+                            text = if (permissionHealth.paymentPageReaderReady) "已连接" else "去设置",
+                            positive = permissionHealth.paymentPageReaderReady,
+                        )
+                    },
+                    onClick = { openSettings(SystemSettingsIntents.accessibility()) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             item {
                 SettingAction("接收新短信", permissionHealth.smsPermissionGranted) {
@@ -334,7 +339,7 @@ fun SettingsScreen(uiState: MainUiState, viewModel: MainViewModel, onBack: () ->
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("DeepSeek 辅助分类")
+                                Text("DeepSeek 分类与月度分析")
                                 Text(
                                     text = if (deepSeekApiKeyText.isBlank()) {
                                         "需要先填写下方的 API Key 才能启用"
@@ -418,10 +423,101 @@ fun SettingsScreen(uiState: MainUiState, viewModel: MainViewModel, onBack: () ->
                             Text("保存 DeepSeek 设置")
                         }
                         Text(
-                            text = "思考模式可能更慢并消耗更多输出 Token。无法可靠判断、网络异常或额度不足时，账单会保持未分类并提醒手动处理。",
+                            text = "思考模式可能更慢并消耗更多输出 Token。启用后，月底月报会发送该月全部消费与退款的时间、金额、商家、分类、支付方式和备注；不会发送收入、转账、原始通知或短信。分类或分析失败时不会改动已有账单和月报。",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodySmall,
                         )
+                    }
+                }
+            }
+
+            item { SectionTitle("微信商家截图识别") }
+            item {
+                val merchantOcr = uiState.settings.merchantOcr
+                YanHuoPanel(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("支付页读不到商家时截图识别")
+                                Text(
+                                    text = "每笔支付只截一次支付成功页，在本机识别商家名，截图不会上传",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Switch(
+                                checked = merchantOcr.enabled,
+                                onCheckedChange = { enabled ->
+                                    viewModel.updateMerchantOcr(merchantOcr.copy(enabled = enabled))
+                                },
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("调试模式")
+                                Text(
+                                    text = "保存每次的整屏和裁剪截图，并记录识别原文和提取结果",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Switch(
+                                checked = merchantOcr.debugEnabled,
+                                onCheckedChange = { debugEnabled ->
+                                    viewModel.updateMerchantOcr(merchantOcr.copy(debugEnabled = debugEnabled))
+                                },
+                            )
+                        }
+                        Text("裁剪区（占屏幕高度的百分比，左右全宽）", style = MaterialTheme.typography.bodySmall)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedTextField(
+                                value = ocrCropTopText,
+                                onValueChange = { ocrCropTopText = it },
+                                label = { Text("上边界 %") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                            )
+                            OutlinedTextField(
+                                value = ocrCropBottomText,
+                                onValueChange = { ocrCropBottomText = it },
+                                label = { Text("下边界 %") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                            )
+                            Button(onClick = {
+                                val top = ocrCropTopText.toIntOrNull()
+                                val bottom = ocrCropBottomText.toIntOrNull()
+                                if (top != null && bottom != null && MerchantOcrSettings.isValidCrop(top, bottom)) {
+                                    viewModel.updateMerchantOcr(
+                                        merchantOcr.copy(cropTopPercent = top, cropBottomPercent = bottom),
+                                    )
+                                } else {
+                                    notify("请输入 0–100 的整数，且上边界小于下边界")
+                                }
+                            }) { Text("保存") }
+                        }
+                        if (merchantOcr.debugEnabled) {
+                            Text(
+                                text = "调试文件目录：${viewModel.merchantOcrDebugDirectory}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        TextButton(onClick = { viewModel.clearMerchantOcrDebugFiles() }) {
+                            Text("清除调试文件")
+                        }
                     }
                 }
             }

@@ -47,9 +47,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,10 +60,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionState
 import com.yanhuozhang.offline.system.PermissionHealth
 import com.yanhuozhang.offline.system.PermissionHealthChecker
 import com.yanhuozhang.offline.system.SystemSettingsIntents
@@ -79,11 +78,18 @@ internal enum class MainTab(val label: String) {
 fun YanHuoApp(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val permissionHealth by rememberPermissionHealth()
     var selectedTab by remember { mutableStateOf(MainTab.HOME) }
     var showSettings by remember { mutableStateOf(false) }
+    var showMonthlyAnalysis by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
     var editingRecordId by remember { mutableStateOf<Long?>(null) }
+    // 每次打开编辑器换一个 key，保证表单状态从头开始（分享截图时编辑器可能正开着）。
+    var editorSession by remember { mutableIntStateOf(0) }
     val editingRecord = uiState.records.firstOrNull { record -> record.id == editingRecordId }
+    val screenshotRecognition by viewModel.screenshotRecognition.collectAsStateWithLifecycle()
+    val sharedScreenshot by viewModel.pendingSharedScreenshot.collectAsStateWithLifecycle()
     // 大标题随滚动收缩，对应 Cashew 的 pageFramework。
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
 
@@ -96,12 +102,42 @@ fun YanHuoApp(viewModel: MainViewModel) {
         return
     }
 
+    // 从系统分享收到截图：解锁并完成引导后才会走到这里，直接打开新账单并开始识别。
+    LaunchedEffect(sharedScreenshot) {
+        val file = sharedScreenshot ?: return@LaunchedEffect
+        showSettings = false
+        showMonthlyAnalysis = false
+        editingRecordId = null
+        editorSession += 1
+        showEditor = true
+        viewModel.recognizeSharedScreenshot(file)
+    }
+
+    // 关闭或保存编辑器时都会取消识别；识别仍在进行而编辑器不在，说明界面被应用锁重建过
+    // （比如在相册里停留超过锁定时间），重新打开新账单接住结果。
+    LaunchedEffect(screenshotRecognition) {
+        if (screenshotRecognition !is ScreenshotRecognitionState.Idle && !showEditor) {
+            editingRecordId = null
+            editorSession += 1
+            showEditor = true
+        }
+    }
+
     if (showSettings) {
         BackHandler { showSettings = false }
         SettingsScreen(
             uiState = uiState,
             viewModel = viewModel,
             onBack = { showSettings = false },
+        )
+        return
+    }
+
+    if (showMonthlyAnalysis) {
+        BackHandler { showMonthlyAnalysis = false }
+        MonthlyAnalysisScreen(
+            viewModel = viewModel,
+            onBack = { showMonthlyAnalysis = false },
         )
         return
     }
@@ -166,6 +202,7 @@ fun YanHuoApp(viewModel: MainViewModel) {
                                 Surface(
                                     onClick = {
                                         editingRecordId = null
+                                        editorSession += 1
                                         showEditor = true
                                     },
                                     modifier = Modifier.size(48.dp),
@@ -218,65 +255,95 @@ fun YanHuoApp(viewModel: MainViewModel) {
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
-        when (selectedTab) {
-            MainTab.HOME -> HomeScreen(
-                uiState = uiState,
-                modifier = Modifier.padding(padding),
-                onOpenPending = { selectedTab = MainTab.PENDING },
-                onOpenLedger = { selectedTab = MainTab.LEDGER },
-                onEditRecord = { id -> editingRecordId = id; showEditor = true },
-            )
-            MainTab.LEDGER -> LedgerScreen(
-                records = uiState.records,
-                categories = uiState.categories,
-                modifier = Modifier.padding(padding),
-                onEditRecord = { id -> editingRecordId = id; showEditor = true },
-                onDeleteRecord = viewModel::deleteRecord,
-            )
-            MainTab.PENDING -> PendingScreen(
-                events = uiState.pendingEvents,
-                records = uiState.records,
-                categories = uiState.categories,
-                modifier = Modifier.padding(padding),
-                parseAmount = viewModel::parseAmount,
-                onConfirm = viewModel::confirmPending,
-                onMerge = viewModel::mergePending,
-                onIgnore = viewModel::ignorePending,
-            )
-            MainTab.STATISTICS -> StatisticsScreen(
-                uiState = uiState,
-                modifier = Modifier.padding(padding),
-                onAnalyzeCurrentMonth = viewModel::analyzeCurrentMonth,
-            )
+        Column(modifier = Modifier.padding(padding)) {
+            if (!permissionHealth.paymentPageReaderReady) {
+                Surface(
+                    onClick = {
+                        SystemSettingsIntents.open(context, SystemSettingsIntents.accessibility())
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Text(
+                        text = permissionHealth.paymentPageReaderDescription,
+                        modifier = Modifier.padding(14.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            when (selectedTab) {
+                MainTab.HOME -> HomeScreen(
+                    uiState = uiState,
+                    modifier = Modifier.weight(1f),
+                    onOpenPending = { selectedTab = MainTab.PENDING },
+                    onOpenLedger = { selectedTab = MainTab.LEDGER },
+                    onEditRecord = { id -> editingRecordId = id; editorSession += 1; showEditor = true },
+                )
+                MainTab.LEDGER -> LedgerScreen(
+                    records = uiState.records,
+                    categories = uiState.categories,
+                    modifier = Modifier.weight(1f),
+                    onEditRecord = { id -> editingRecordId = id; editorSession += 1; showEditor = true },
+                    onDeleteRecord = viewModel::deleteRecord,
+                )
+                MainTab.PENDING -> PendingScreen(
+                    events = uiState.pendingEvents,
+                    records = uiState.records,
+                    categories = uiState.categories,
+                    modifier = Modifier.weight(1f),
+                    parseAmount = viewModel::parseAmount,
+                    onConfirm = viewModel::confirmPending,
+                    onMerge = viewModel::mergePending,
+                    onIgnore = viewModel::ignorePending,
+                )
+                MainTab.STATISTICS -> StatisticsScreen(
+                    uiState = uiState,
+                    modifier = Modifier.weight(1f),
+                    onAnalyzeCurrentMonth = viewModel::analyzeCurrentMonth,
+                    onOpenMonthlyAnalysis = { showMonthlyAnalysis = true },
+                )
+            }
         }
     }
 
     if (showEditor) {
-        RecordEditorDialog(
-            existing = editingRecord,
-            pendingEvent = null,
-            categories = uiState.categories,
-            records = uiState.records,
-            parseAmount = viewModel::parseAmount,
-            onDismiss = { showEditor = false },
-            onSave = { input, rule ->
-                val recordId = editingRecordId
-                if (recordId == null) {
-                    viewModel.addManual(input, rule)
-                } else {
-                    viewModel.updateRecord(recordId, input, rule)
-                }
-                showEditor = false
-            },
-        )
+        key(editorSession) {
+            RecordEditorDialog(
+                existing = editingRecord,
+                pendingEvent = null,
+                categories = uiState.categories,
+                records = uiState.records,
+                parseAmount = viewModel::parseAmount,
+                onDismiss = {
+                    viewModel.cancelScreenshotRecognition()
+                    showEditor = false
+                },
+                onSave = { input, rule ->
+                    val recordId = editingRecordId
+                    if (recordId == null) {
+                        viewModel.addManual(input, rule)
+                    } else {
+                        viewModel.updateRecord(recordId, input, rule)
+                    }
+                    viewModel.cancelScreenshotRecognition()
+                    showEditor = false
+                },
+                screenshotRecognition = screenshotRecognition,
+                screenshotRecognitionAvailable = uiState.settings.deepSeekEnabled &&
+                    uiState.settings.deepSeekApiKey.isNotBlank(),
+                onScreenshotPicked = viewModel::recognizeScreenshot,
+                onCancelScreenshotRecognition = viewModel::cancelScreenshotRecognition,
+                onScreenshotRecognitionConsumed = viewModel::consumeScreenshotRecognition,
+            )
+        }
     }
 }
 
 @Composable
 private fun OnboardingScreen(onComplete: () -> Unit) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var health by remember { mutableStateOf(PermissionHealthChecker.check(context)) }
+    var health by rememberPermissionHealth()
     val smsPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { health = PermissionHealthChecker.check(context) }
@@ -284,15 +351,7 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         ActivityResultContracts.RequestPermission(),
     ) { health = PermissionHealthChecker.check(context) }
 
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                health = PermissionHealthChecker.check(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+
 
     Column(
         modifier = Modifier
@@ -343,8 +402,8 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         )
         PermissionCard(
             title = "微信支付页面读取",
-            description = "从微信支付成功页提取金额和交易对象。",
-            granted = health.accessibilityGranted,
+            description = health.paymentPageReaderDescription,
+            granted = health.paymentPageReaderReady,
             onClick = { SystemSettingsIntents.open(context, SystemSettingsIntents.accessibility()) },
         )
         PermissionCard(

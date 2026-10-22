@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">烟火账</string>
+    <string name="share_screenshot_label">截图记账</string>
     <string name="payment_accessibility_service_label">烟火账微信支付页面识别</string>
-    <string name="payment_accessibility_service_description">读取微信支付成功页中显示的金额和交易对象，用于离线自动记账。</string>
+    <string name="payment_accessibility_service_description">读取微信支付成功页中显示的金额和交易对象，用于离线自动记账。页面文字里读不到交易对象时，会在支付成功页截图一次，并只在本机识别商家名。</string>
 </resources>

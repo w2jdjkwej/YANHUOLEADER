@@ -26,6 +26,14 @@ internal object AccessibilityNodeCollector {
         root: AccessibilityNodeInfo,
         maximumNodes: Int,
     ): CollectedNodes {
+        return collectDetailed(root, maximumNodes, visibleOnly = false)
+    }
+
+    fun collectDetailed(
+        root: AccessibilityNodeInfo,
+        maximumNodes: Int,
+        visibleOnly: Boolean,
+    ): CollectedNodes {
         if (maximumNodes <= 0) {
             return CollectedNodes(emptyList(), truncated = true)
         }
@@ -59,7 +67,7 @@ internal object AccessibilityNodeCollector {
 
             for (childIndex in 0 until node.childCount) {
                 val child = node.getChild(childIndex)
-                if (child != null) {
+                if (child != null && (!visibleOnly || child.isVisibleToUser)) {
                     queue.addLast(QueueEntry(child, clickableContainer))
                 }
             }

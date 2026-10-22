@@ -1,6 +1,7 @@
 package com.yanhuozhang.offline.system
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -37,6 +38,16 @@ class SystemNotificationManager(private val context: Context) {
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "本地规则和 DeepSeek 都无法可靠分类时提醒"
+            },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                PAYMENT_READER_CHANNEL_ID,
+                "支付页面识别运行状态",
+                NotificationManager.IMPORTANCE_MIN,
+            ).apply {
+                description = "保持支付页面识别在后台运行，避免 HyperOS 冻结后漏记账；可在系统里隐藏此通知"
+                setShowBadge(false)
             },
         )
         manager.createNotificationChannel(
@@ -103,14 +114,23 @@ class SystemNotificationManager(private val context: Context) {
         )
     }
 
-    private fun notify(notificationId: Int, channelId: String, title: String, text: String) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+    /** 无障碍服务进入前台服务时使用的常驻通知。没有通知权限时系统不显示它，但前台服务照常生效。 */
+    fun paymentReaderNotification(): Notification {
+        return NotificationCompat.Builder(context, PAYMENT_READER_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("烟火账正在识别微信支付")
+            .setContentText("保持后台运行，避免系统冻结后漏记账")
+            .setContentIntent(launchPendingIntent())
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+    }
+
+    private fun launchPendingIntent(): PendingIntent? {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-        val pendingIntent = launchIntent?.let { intent ->
+        return launchIntent?.let { intent ->
             PendingIntent.getActivity(
                 context,
                 0,
@@ -118,11 +138,19 @@ class SystemNotificationManager(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
+    }
+
+    private fun notify(notificationId: Int, channelId: String, title: String, text: String) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(text)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(launchPendingIntent())
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(notificationId, notification)
@@ -137,6 +165,9 @@ class SystemNotificationManager(private val context: Context) {
         const val REMINDER_CHANNEL_ID = "pending_reminders"
         const val CLASSIFICATION_CHANNEL_ID = "classification_required"
         const val MONTHLY_ANALYSIS_CHANNEL_ID = "monthly_analysis"
+        const val PAYMENT_READER_CHANNEL_ID = "payment_reader"
+        // 待确认、待分类通知按事件或账单 ID 递增编号，这里取一个远离它们的固定值。
+        const val PAYMENT_READER_NOTIFICATION_ID = 1_900_000_001
         private const val CLASSIFICATION_NOTIFICATION_BASE = 30_000
         private const val MONTHLY_ANALYSIS_NOTIFICATION_ID = 40_000
         private const val SUMMARY_NOTIFICATION_ID = 20_000

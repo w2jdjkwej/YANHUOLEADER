@@ -2,6 +2,10 @@ package com.yanhuozhang.offline.ui
 
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -43,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +69,9 @@ import com.yanhuozhang.offline.data.LedgerInput
 import com.yanhuozhang.offline.data.LedgerRecordEntity
 import com.yanhuozhang.offline.data.PersonalRuleInput
 import com.yanhuozhang.offline.data.TransactionEventEntity
+import com.yanhuozhang.offline.recognition.PossibleDuplicateFinder
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionResult
+import com.yanhuozhang.offline.recognition.ScreenshotRecognitionState
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.ZoneId
@@ -79,6 +87,12 @@ fun RecordEditorDialog(
     parseAmount: (String) -> Long?,
     onDismiss: () -> Unit,
     onSave: (LedgerInput, PersonalRuleInput?) -> Unit,
+    screenshotRecognition: ScreenshotRecognitionState = ScreenshotRecognitionState.Idle,
+    screenshotRecognitionAvailable: Boolean = false,
+    /** 为 null 时不显示“从截图识别”；只有新建账单时才传入。 */
+    onScreenshotPicked: ((Uri) -> Unit)? = null,
+    onCancelScreenshotRecognition: () -> Unit = {},
+    onScreenshotRecognitionConsumed: (Long) -> Unit = {},
 ) {
     val initialAmount = existing?.amountCents ?: pendingEvent?.amountCents
     var amountText by remember { mutableStateOf(initialAmount?.toYuanText().orEmpty()) }
@@ -117,6 +131,59 @@ fun RecordEditorDialog(
     var updateHistoricalUncategorized by remember { mutableStateOf(true) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
+    // 截图识别回填后的提示；用户改动对应字段后提示随之消失。
+    val showScreenshotEntry = onScreenshotPicked != null && existing == null && pendingEvent == null
+    var screenshotNotice by remember { mutableStateOf<ScreenshotNotice?>(null) }
+    var filledFromScreenshot by remember { mutableStateOf(false) }
+    var screenshotAmountMissing by remember { mutableStateOf(false) }
+    var screenshotTimeMissing by remember { mutableStateOf(false) }
+    var counterpartyInferred by remember { mutableStateOf(false) }
+    var counterpartyBasis by remember { mutableStateOf<String?>(null) }
+    val screenshotPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            screenshotNotice = null
+            onScreenshotPicked?.invoke(uri)
+        }
+    }
+
+    LaunchedEffect(screenshotRecognition) {
+        if (!showScreenshotEntry) return@LaunchedEffect
+        val finished = screenshotRecognition as? ScreenshotRecognitionState.Finished
+            ?: return@LaunchedEffect
+        when (val result = finished.result) {
+            is ScreenshotRecognitionResult.Recognized -> {
+                val recognized = result.transaction
+                accountingType = recognized.accountingType
+                direction = recognized.direction
+                categoryId = recognized.categoryId
+                paymentChannel = recognized.paymentChannel
+                // 截图里缺的字段保留表单原值，不清空用户已经填的内容。
+                recognized.amountCents?.let { cents -> amountText = cents.toYuanText() }
+                recognized.counterparty?.let { text -> counterparty = text }
+                recognized.note.takeIf { text -> text.isNotEmpty() }?.let { text -> note = text }
+                recognized.transactionTimeMillis?.let { time -> transactionTimeMillis = time }
+                includeTransferInStats = true
+                adjustOriginalMonth = false
+                relatedRecordId = null
+                // 推测出的交易对象可能不对，默认不据此生成个人规则，用户确认后可自己勾选。
+                saveRule = !recognized.counterpartyInferred
+                filledFromScreenshot = true
+                screenshotAmountMissing = recognized.amountCents == null
+                screenshotTimeMissing = recognized.transactionTimeMillis == null
+                counterpartyInferred = recognized.counterpartyInferred
+                counterpartyBasis = recognized.counterpartyBasis
+                errorText = null
+                screenshotNotice = ScreenshotNotice.Filled(recognized.warnings)
+            }
+            is ScreenshotRecognitionResult.Failed -> {
+                screenshotNotice = ScreenshotNotice.Failed(result.reason)
+            }
+        }
+        onScreenshotRecognitionConsumed(finished.requestId)
+    }
+
     val categoryType = when (accountingType) {
         AccountingType.INCOME -> AccountingType.INCOME
         AccountingType.TRANSFER,
@@ -136,6 +203,30 @@ fun RecordEditorDialog(
             counterparty.isNotBlank() &&
             selectedCategory != null &&
             selectedCategory.name != "未分类"
+    val duplicateAmountCents = if (filledFromScreenshot) parseAmount(amountText) else null
+    val possibleDuplicates = remember(
+        records,
+        duplicateAmountCents,
+        direction,
+        transactionTimeMillis,
+        screenshotTimeMissing,
+    ) {
+        if (duplicateAmountCents == null) {
+            emptyList()
+        } else {
+            PossibleDuplicateFinder.find(
+                records = records,
+                amountCents = duplicateAmountCents,
+                direction = direction,
+                transactionTimeMillis = transactionTimeMillis,
+                windowMillis = if (screenshotTimeMissing) {
+                    PossibleDuplicateFinder.UNKNOWN_TIME_WINDOW_MILLIS
+                } else {
+                    PossibleDuplicateFinder.KNOWN_TIME_WINDOW_MILLIS
+                },
+            )
+        }
+    }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -183,14 +274,36 @@ fun RecordEditorDialog(
                     }
                 }
             }
+            if (showScreenshotEntry) {
+                ScreenshotRecognitionEntry(
+                    available = screenshotRecognitionAvailable,
+                    runningRequestId = (screenshotRecognition as? ScreenshotRecognitionState.Running)?.requestId,
+                    onPick = {
+                        screenshotPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    },
+                    onCancel = onCancelScreenshotRecognition,
+                )
+            }
+            screenshotNotice?.let { notice -> ScreenshotNoticePanel(notice) }
             YanHuoPanel(
                 modifier = Modifier.fillMaxWidth(),
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
             ) {
                 OutlinedTextField(
                     value = amountText,
-                    onValueChange = { value -> amountText = value; errorText = null },
+                    onValueChange = { value ->
+                        amountText = value
+                        errorText = null
+                        screenshotAmountMissing = false
+                    },
                     label = { Text("金额（元）") },
+                    supportingText = if (screenshotAmountMissing) {
+                        { Text("截图里没有找到金额，请手动填写") }
+                    } else {
+                        null
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -265,8 +378,18 @@ fun RecordEditorDialog(
             EditorSection(title = "时间与说明") {
                 DateTimeSelector(
                     timeMillis = transactionTimeMillis,
-                    onTimeChanged = { transactionTimeMillis = it },
+                    onTimeChanged = { time ->
+                        transactionTimeMillis = time
+                        screenshotTimeMissing = false
+                    },
                 )
+                if (screenshotTimeMissing) {
+                    Text(
+                        text = "截图里没有可用的交易时间，已使用当前时间，请核对",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 if (accountingType == AccountingType.REFUND) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Checkbox(
@@ -287,8 +410,16 @@ fun RecordEditorDialog(
                 }
                 OutlinedTextField(
                     value = counterparty,
-                    onValueChange = { counterparty = it },
-                    label = { Text("交易对象（可选）") },
+                    onValueChange = { text ->
+                        counterparty = text
+                        counterpartyInferred = false
+                    },
+                    label = { Text(if (counterpartyInferred) "交易对象（推测）" else "交易对象（可选）") },
+                    supportingText = if (counterpartyInferred) {
+                        { Text("截图上没有写明，${counterpartyBasis ?: "由截图内容推测"}") }
+                    } else {
+                        null
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -314,6 +445,9 @@ fun RecordEditorDialog(
                         }
                     }
                 }
+            }
+            if (possibleDuplicates.isNotEmpty()) {
+                PossibleDuplicatePanel(possibleDuplicates)
             }
             errorText?.let { message ->
                 Text(

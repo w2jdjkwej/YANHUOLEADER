@@ -1,6 +1,13 @@
 package com.yanhuozhang.offline.system
 
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.ResolveInfo
+import android.content.pm.ServiceInfo
+import android.view.accessibility.AccessibilityManager
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.util.ReflectionHelpers
 import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
@@ -44,6 +51,71 @@ class SystemSettingsIntentsTest {
         )
     }
 
+    @Test
+    fun `short accessibility component matches full service class`() {
+        assertTrue(
+            PermissionHealthChecker.containsEnabledService(
+                "com.example/.Other:com.yanhuozhang.offline/.system.WechatPaymentAccessibilityService",
+                "com.yanhuozhang.offline/com.yanhuozhang.offline.system.WechatPaymentAccessibilityService",
+            ),
+        )
+    }
+
+    @Test
+    fun `enabled permission without bound service is not ready`() {
+        val expected = ComponentName(context, WechatPaymentAccessibilityService::class.java)
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, expected.flattenToString())
+        val manager = context.getSystemService(AccessibilityManager::class.java)
+        shadowOf(manager).setEnabledAccessibilityServiceList(emptyList())
+
+        val health = PermissionHealthChecker.check(context)
+
+        assertTrue(health.accessibilityGranted)
+        assertFalse(health.accessibilityServiceConnected)
+        assertFalse(health.paymentPageReaderReady)
+        assertTrue(health.paymentPageReaderDescription.contains("未连接"))
+    }
+
+    @Test
+    fun `another bound accessibility service cannot make payment reader ready`() {
+        val expected = ComponentName(context, WechatPaymentAccessibilityService::class.java)
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, expected.flattenToString())
+        val manager = context.getSystemService(AccessibilityManager::class.java)
+        shadowOf(manager).setEnabledAccessibilityServiceList(listOf(serviceInfo("com.example", "com.example.OtherService")))
+
+        val health = PermissionHealthChecker.check(context)
+
+        assertTrue(health.accessibilityGranted)
+        assertFalse(health.accessibilityServiceConnected)
+        assertFalse(health.paymentPageReaderReady)
+    }
+
+    @Test
+    fun `bound payment service with permission is ready`() {
+        val expected = ComponentName(context, WechatPaymentAccessibilityService::class.java)
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, expected.flattenToString())
+        val manager = context.getSystemService(AccessibilityManager::class.java)
+        shadowOf(manager).setEnabledAccessibilityServiceList(listOf(serviceInfo(expected.packageName, expected.className)))
+
+        val health = PermissionHealthChecker.check(context)
+
+        assertTrue(health.accessibilityGranted)
+        assertTrue(health.accessibilityServiceConnected)
+        assertTrue(health.paymentPageReaderReady)
+        assertTrue(health.paymentPageReaderDescription.contains("已连接"))
+    }
+
+    private fun serviceInfo(packageName: String, className: String): AccessibilityServiceInfo {
+        val resolveInfo = ResolveInfo()
+        resolveInfo.serviceInfo = ServiceInfo().apply {
+            this.packageName = packageName
+            name = className
+        }
+        val info = AccessibilityServiceInfo()
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        ReflectionHelpers.setField(info, "mResolveInfo", resolveInfo)
+        return info
+    }
     @Test
     fun `xiaomi auto start intent targets security center`() {
         val intent = SystemSettingsIntents.xiaomiAutoStart(context)

@@ -23,6 +23,7 @@ data class AppSettings(
     val deepSeekApiKey: String = "",
     val deepSeekModel: DeepSeekModel = DeepSeekModel.FLASH,
     val deepSeekThinkingMode: DeepSeekThinkingMode = DeepSeekThinkingMode.DISABLED,
+    val merchantOcr: MerchantOcrSettings = MerchantOcrSettings(),
 ) {
     fun toBackupSettings(): BackupSettings {
         return BackupSettings(
@@ -51,6 +52,10 @@ class SettingsRepository(private val context: Context) {
         val deepSeekApiKey = stringPreferencesKey("deepseek_api_key")
         val deepSeekModel = stringPreferencesKey("deepseek_model")
         val deepSeekThinkingMode = stringPreferencesKey("deepseek_thinking_mode")
+        val merchantOcrEnabled = booleanPreferencesKey("merchant_ocr_enabled")
+        val merchantOcrDebugEnabled = booleanPreferencesKey("merchant_ocr_debug_enabled")
+        val merchantOcrCropTopPercent = intPreferencesKey("merchant_ocr_crop_top_percent")
+        val merchantOcrCropBottomPercent = intPreferencesKey("merchant_ocr_crop_bottom_percent")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { preferences ->
@@ -69,6 +74,14 @@ class SettingsRepository(private val context: Context) {
             deepSeekThinkingMode = DeepSeekThinkingMode.fromApiValue(
                 preferences[Keys.deepSeekThinkingMode]
                     ?: DeepSeekThinkingMode.DISABLED.apiValue,
+            ),
+            merchantOcr = MerchantOcrSettings(
+                enabled = preferences[Keys.merchantOcrEnabled] ?: true,
+                debugEnabled = preferences[Keys.merchantOcrDebugEnabled] ?: false,
+                cropTopPercent = preferences[Keys.merchantOcrCropTopPercent]
+                    ?: MerchantOcrSettings.DEFAULT_CROP_TOP_PERCENT,
+                cropBottomPercent = preferences[Keys.merchantOcrCropBottomPercent]
+                    ?: MerchantOcrSettings.DEFAULT_CROP_BOTTOM_PERCENT,
             ),
         )
     }
@@ -110,6 +123,18 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.deepSeekApiKey] = trimmedApiKey
             preferences[Keys.deepSeekModel] = model.apiValue
             preferences[Keys.deepSeekThinkingMode] = thinkingMode.apiValue
+        }
+    }
+
+    suspend fun setMerchantOcr(settings: MerchantOcrSettings) {
+        require(MerchantOcrSettings.isValidCrop(settings.cropTopPercent, settings.cropBottomPercent)) {
+            "裁剪区需满足 0 ≤ 上边界 < 下边界 ≤ 100"
+        }
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.merchantOcrEnabled] = settings.enabled
+            preferences[Keys.merchantOcrDebugEnabled] = settings.debugEnabled
+            preferences[Keys.merchantOcrCropTopPercent] = settings.cropTopPercent
+            preferences[Keys.merchantOcrCropBottomPercent] = settings.cropBottomPercent
         }
     }
 

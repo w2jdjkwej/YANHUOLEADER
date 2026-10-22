@@ -93,8 +93,40 @@ class DatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migration4To5KeepsLegacyReportAndAddsStructuredJsonColumns() {
+        helper.createDatabase(TEST_DATABASE_4_5, 4).use { database ->
+            database.execSQL(
+                "INSERT INTO monthly_analysis_reports " +
+                    "(monthKey,totalExpenseCents,summary,observation1,observation2,observation3," +
+                    "suggestion,lightComment,model,thinkingMode,inputFingerprint,generatedAtMillis) " +
+                    "VALUES ('2026-07',2350,'旧版月报',NULL,NULL,NULL,NULL,NULL," +
+                    "'deepseek-v4-flash','disabled','fingerprint',1000)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(
+            TEST_DATABASE_4_5,
+            5,
+            true,
+            AppDatabase.MIGRATION_4_5,
+        ).use { database ->
+            database.query(
+                "SELECT summary,localAnalysisJson,aiAnalysisJson,reportSchemaVersion " +
+                    "FROM monthly_analysis_reports WHERE monthKey = '2026-07'",
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("旧版月报", cursor.getString(0))
+                assertTrue(cursor.isNull(1))
+                assertTrue(cursor.isNull(2))
+                assertEquals(1, cursor.getInt(3))
+            }
+        }
+    }
+
     companion object {
         private const val TEST_DATABASE = "migration-1-2-test"
         private const val TEST_DATABASE_2_3 = "migration-2-3-test"
+        private const val TEST_DATABASE_4_5 = "migration-4-5-test"
     }
 }

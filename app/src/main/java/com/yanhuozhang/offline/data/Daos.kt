@@ -269,6 +269,9 @@ interface MonthlyAnalysisDao {
     @Query("SELECT * FROM monthly_analysis_reports ORDER BY monthKey DESC LIMIT 1")
     fun observeLatest(): Flow<MonthlyAnalysisReportEntity?>
 
+    @Query("SELECT * FROM monthly_analysis_reports ORDER BY monthKey DESC")
+    fun observeAllDescending(): Flow<List<MonthlyAnalysisReportEntity>>
+
     @Query("SELECT * FROM monthly_analysis_reports ORDER BY monthKey")
     suspend fun getAll(): List<MonthlyAnalysisReportEntity>
 

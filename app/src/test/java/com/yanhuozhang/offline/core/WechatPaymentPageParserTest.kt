@@ -2,9 +2,57 @@ package com.yanhuozhang.offline.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WechatPaymentPageParserTest {
+    @Test
+    fun `parses real Jingdong payment page captured on device`() {
+        val stream = requireNotNull(javaClass.getResourceAsStream("/wechat/jd-success-20261014.xml"))
+        val document = stream.use {
+            javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(it)
+        }
+        val elements = document.getElementsByTagName("node")
+        val nodes = mutableListOf<ScreenTextNode>()
+        val boundsPattern = Regex("\\d+")
+        for (index in 0 until elements.length) {
+            val element = elements.item(index) as org.w3c.dom.Element
+            val coordinates = boundsPattern.findAll(element.getAttribute("bounds")).map { it.value.toInt() }.toList()
+            val text = element.getAttribute("text")
+            val description = element.getAttribute("content-desc")
+            for (value in listOf(text, description)) {
+                if (value.isNotBlank()) {
+                    nodes.add(ScreenTextNode(value, coordinates[0], coordinates[1], coordinates[2], coordinates[3]))
+                }
+            }
+        }
+
+        val observation = WechatPaymentPageParser.parseNodes(nodes)
+
+        assertEquals(990L, observation?.amountCents)
+        assertEquals("京东", observation?.counterparty)
+    }
+
+    @Test
+    fun `incomplete success page can be retried without recording it`() {
+        val nodes = listOf(ScreenTextNode("微信支付 成功", 0, 192, 1_200, 273))
+
+        assertTrue(WechatPaymentPageParser.containsPaymentSuccessMarker(nodes))
+        assertNull(WechatPaymentPageParser.parseNodes(nodes))
+    }
+
+    @Test
+    fun `ordinary wechat page does not trigger payment retries`() {
+        val nodes = listOf(
+            ScreenTextNode("新天地超市", 0, 192, 1_200, 273),
+            ScreenTextNode("正在付款", 0, 300, 1_200, 400),
+        )
+
+        assertFalse(WechatPaymentPageParser.containsPaymentSuccessMarker(nodes))
+        assertNull(WechatPaymentPageParser.parseNodes(nodes))
+    }
+
     @Test
     fun `extracts counterparty and cents from supplied success page`() {
         val result = WechatPaymentPageParser.parseNodes(

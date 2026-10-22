@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         IgnoredFingerprintEntity::class,
         MonthlyAnalysisReportEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)
@@ -70,13 +70,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE monthly_analysis_reports ADD COLUMN localAnalysisJson TEXT")
+                database.execSQL("ALTER TABLE monthly_analysis_reports ADD COLUMN aiAnalysisJson TEXT")
+                database.execSQL(
+                    "ALTER TABLE monthly_analysis_reports " +
+                        "ADD COLUMN reportSchemaVersion INTEGER NOT NULL DEFAULT 1",
+                )
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "yanhuo-ledger.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                )
                     .build()
                     .also { database -> instance = database }
             }

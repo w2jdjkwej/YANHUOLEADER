@@ -1,6 +1,8 @@
 package com.yanhuozhang.offline.system
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.view.accessibility.AccessibilityManager
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
@@ -76,7 +78,18 @@ data class PermissionHealth(
     val smsPermissionGranted: Boolean,
     val appNotificationsGranted: Boolean,
     val batteryOptimizationDisabled: Boolean,
-)
+    val accessibilityServiceConnected: Boolean = false,
+) {
+    val paymentPageReaderReady: Boolean
+        get() = accessibilityGranted && accessibilityServiceConnected
+
+    val paymentPageReaderDescription: String
+        get() = when {
+            !accessibilityGranted -> "请开启微信支付页面读取，以提取支付成功页中的金额和商家。"
+            !accessibilityServiceConnected -> "权限已开启，但读取服务未连接。请进入系统设置，将烟火账的服务关闭后重新开启。"
+            else -> "读取服务已连接，可提取微信支付成功页中的金额和商家。"
+        }
+}
 
 object PermissionHealthChecker {
     fun check(context: Context): PermissionHealth {
@@ -86,6 +99,7 @@ object PermissionHealthChecker {
             notificationAccessGranted = context.packageName in
                 NotificationManagerCompat.getEnabledListenerPackages(context),
             accessibilityGranted = isPaymentAccessibilityEnabled(context),
+            accessibilityServiceConnected = isPaymentAccessibilityConnected(context),
             smsPermissionGranted = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.RECEIVE_SMS,
@@ -107,12 +121,30 @@ object PermissionHealthChecker {
         return containsEnabledService(enabledServices, expectedComponent)
     }
 
+    private fun isPaymentAccessibilityConnected(context: Context): Boolean {
+        val manager = context.getSystemService(AccessibilityManager::class.java) ?: return false
+        val expectedComponent = ComponentName(context, WechatPaymentAccessibilityService::class.java)
+        val services = manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+        for (service in services) {
+            val info = service.resolveInfo?.serviceInfo ?: continue
+            if (ComponentName(info.packageName, info.name) == expectedComponent) {
+                return true
+            }
+        }
+        return false
+    }
+
     internal fun containsEnabledService(
         enabledServices: String,
         expectedComponent: String,
     ): Boolean {
-        return enabledServices.split(':').any { component ->
-            component.equals(expectedComponent, ignoreCase = true)
+        val expected = ComponentName.unflattenFromString(expectedComponent)?.flattenToString() ?: return false
+        for (value in enabledServices.split(':')) {
+            val component = ComponentName.unflattenFromString(value.trim()) ?: continue
+            if (component.flattenToString().equals(expected, ignoreCase = true)) {
+                return true
+            }
         }
+        return false
     }
 }

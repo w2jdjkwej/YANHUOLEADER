@@ -305,6 +305,43 @@ class LedgerRepository(
         return RemoteClassificationContext(record, categories)
     }
 
+    /**
+     * 截图识别后用本地规则补分类：先查个人对象规则，再查本地关键词（关键词只覆盖支出）。
+     * 都没命中时返回 null，由调用方决定是否采用模型建议的分类。
+     */
+    suspend fun suggestCategoryId(
+        counterparty: String?,
+        note: String,
+        accountingType: AccountingType,
+        direction: TransactionDirection,
+        paymentChannel: PaymentChannel,
+    ): Long? {
+        val observation = ParsedObservation(
+            source = EventSource.MANUAL,
+            sourceEventId = "screenshot-suggestion",
+            rawText = note,
+            amountCents = null,
+            direction = direction,
+            kind = accountingType.toObservationKind(),
+            transactionTimeMillis = null,
+            observedAtMillis = 0L,
+            canAutoRecord = false,
+            counterparty = counterparty,
+        )
+        val rule = PersonalRuleMatcher.findMatch(
+            rules = database.ruleDao().getActive(),
+            observation = observation,
+            paymentChannel = paymentChannel,
+        )
+        if (rule?.categoryId != null && rule.accountingType == accountingType) {
+            return rule.categoryId
+        }
+        if (accountingType == AccountingType.EXPENSE) {
+            return findLocalCategory(counterparty, note)?.id
+        }
+        return null
+    }
+
     suspend fun applyRemoteCategoryIfUnclassified(
         recordId: Long,
         categoryId: Long,

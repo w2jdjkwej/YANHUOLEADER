@@ -2,10 +2,13 @@ package com.yanhuozhang.offline.system
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.view.accessibility.AccessibilityEvent
 import androidx.test.core.app.ApplicationProvider
 import com.yanhuozhang.offline.R
+import com.yanhuozhang.offline.ShareScreenshotActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -49,6 +52,21 @@ class ManifestConfigurationTest {
     }
 
     @Test
+    fun `payment accessibility service may run as special use foreground service`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val packageInfo = context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_PERMISSIONS or PackageManager.GET_SERVICES,
+        )
+        val permissions = packageInfo.requestedPermissions.orEmpty().toSet()
+        val service = packageInfo.services.orEmpty()
+            .single { info -> info.name == WechatPaymentAccessibilityService::class.java.name }
+
+        assertTrue(Manifest.permission.FOREGROUND_SERVICE_SPECIAL_USE in permissions)
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, service.foregroundServiceType)
+    }
+
+    @Test
     fun `payment accessibility service listens for window changes`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val parser = context.resources.getXml(R.xml.wechat_payment_accessibility_service)
@@ -67,6 +85,38 @@ class ManifestConfigurationTest {
         } finally {
             parser.close()
         }
+    }
+
+    @Test
+    fun `payment accessibility service can take screenshots for merchant OCR`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val parser = context.resources.getXml(R.xml.wechat_payment_accessibility_service)
+
+        try {
+            while (parser.eventType != XmlPullParser.START_TAG && parser.eventType != XmlPullParser.END_DOCUMENT) {
+                parser.next()
+            }
+
+            assertTrue(parser.getAttributeBooleanValue(ANDROID_NAMESPACE, "canTakeScreenshot", false))
+        } finally {
+            parser.close()
+        }
+    }
+
+    @Test
+    fun `shared images open the screenshot recognition entry`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            setPackage(context.packageName)
+        }
+
+        val activities = context.packageManager.queryIntentActivities(intent, 0)
+
+        assertEquals(
+            listOf(ShareScreenshotActivity::class.java.name),
+            activities.map { info -> info.activityInfo.name },
+        )
     }
 
     companion object {
